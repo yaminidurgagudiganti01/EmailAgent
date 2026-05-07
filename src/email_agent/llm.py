@@ -29,6 +29,36 @@ Sign off with:
 {signature}
 """
 
+COMPOSE_SYSTEM = """You are drafting a brand-new email on behalf of {user}.
+Write in a natural, professional but warm tone. Keep it concise.
+Do NOT invent facts or commitments — use bracketed placeholders like [details here] \
+for anything you don't know.
+
+Sign off with:
+{signature}
+"""
+
+FOLLOWUP_SYSTEM = """You are writing a polite follow-up email on behalf of {user}.
+The original email was sent {days} day(s) ago and has received no reply yet.
+Keep it brief (2-3 sentences), friendly, and non-pushy. Do not repeat the full \
+original email — just reference the topic lightly.
+
+Sign off with:
+{signature}
+"""
+
+STYLE_SYSTEM = """You are analysing a collection of emails written by {user} to learn their writing style.
+Summarise in 4-6 concise bullet points:
+• Typical greeting (e.g. "Hi [name]," or "Dear [name],")
+• Tone (formal / semi-formal / casual)
+• Average email length (very short / short / medium)
+• Common phrases or patterns they use
+• How they close / sign off
+• Any other notable stylistic habits
+
+Be specific — quote actual patterns from the emails where possible.
+Output ONLY the bullet-point list, no preamble."""
+
 ACTION_ACK_SYSTEM = """You are drafting a brief acknowledgement email on behalf of {user}.
 The sender has asked {user} to take a non-reply action (e.g. review a document, \
 pay an invoice, complete a task). Write 2-3 sentences: confirm receipt, state that \
@@ -83,16 +113,24 @@ def triage_email(email: Email) -> TriageDecision:
     return model.invoke(prompt)
 
 
+def _style_kb_suffix(style_profile: str | None, kb_context: str | None) -> str:
+    parts = []
+    if style_profile:
+        parts.append(f"\n\nUser's writing style:\n{style_profile}")
+    if kb_context:
+        parts.append(f"\n\nKnowledge base context:\n{kb_context}")
+    return "".join(parts)
+
+
 @_retry
 def draft_reply(
     email: Email,
     triage_reasoning: str,
     category: TriageCategory | None = None,
+    style_profile: str | None = None,
+    kb_context: str | None = None,
 ) -> DraftReply:
-    """Generate a reply draft for an email.
-
-    Uses a shorter acknowledgement prompt for action_required emails.
-    """
+    """Generate a reply draft for an email."""
     model = _llm(temperature=0.4)
 
     reply_to = email.from_addr
@@ -120,7 +158,7 @@ def draft_reply(
             "system",
             system_template.format(
                 user=settings.user_name, signature=settings.user_signature
-            ),
+            ) + _style_kb_suffix(style_profile, kb_context),
         ),
         (
             "human",
@@ -144,3 +182,75 @@ def draft_reply(
         in_reply_to_id=email.id,
         thread_id=email.thread_id,
     )
+
+
+@_retry
+def compose_email(
+    to: str,
+    subject: str,
+    context: str,
+    style_profile: str | None = None,
+    kb_context: str | None = None,
+) -> DraftReply:
+    """Generate a brand-new email from a brief context description."""
+    model = _llm(temperature=0.4)
+    prompt = [
+        (
+            "system",
+            COMPOSE_SYSTEM.format(
+                user=settings.user_name, signature=settings.user_signature
+            ) + _style_kb_suffix(style_profile, kb_context),
+        ),
+        (
+            "human",
+            f"To: {to}\nSubject: {subject}\nNotes: {context}\n\nWrite the email body only.",
+        ),
+    ]
+    logger.debug("Calling LLM to compose — %r", subject)
+    response = model.invoke(prompt)
+    body = response.content if isinstance(response.content, str) else str(response.content)
+    return DraftReply(to=[to], subject=subject, body=body.strip())
+
+
+@_retry
+def analyze_style(emails: list[Email]) -> str:
+    """Analyse a sample of sent emails and return a style-profile summary."""
+    model = _llm(temperature=0.0)
+    samples = "\n\n---\n\n".join(
+        f"Subject: {e.subject}\n\n{e.body[:1500]}"
+        for e in emails[:20]
+    )
+    prompt = [
+        ("system", STYLE_SYSTEM.format(user=settings.user_name)),
+        ("human", f"Here are {len(emails[:20])} emails written by {settings.user_name}:\n\n{samples}"),
+    ]
+    logger.debug("Calling LLM to analyse writing style (%d emails)", len(emails))
+    response = model.invoke(prompt)
+    return (response.content if isinstance(response.content, str) else str(response.content)).strip()
+
+
+@_retry
+def generate_followup(email: Email, days: int = 3) -> DraftReply:
+    """Generate a follow-up for a sent email that got no reply."""
+    model = _llm(temperature=0.3)
+    to = email.to[0] if email.to else ""
+    subject = email.subject if email.subject.lower().startswith("re:") else f"Re: {email.subject}"
+    prompt = [
+        (
+            "system",
+            FOLLOWUP_SYSTEM.format(
+                user=settings.user_name,
+                signature=settings.user_signature,
+                days=days,
+            ),
+        ),
+        (
+            "human",
+            f"Original email:\nTo: {', '.join(email.to)}\nSubject: {email.subject}\n\n"
+            f"{email.body[:2000]}\n\nWrite the follow-up body only.",
+        ),
+    ]
+    logger.debug("Calling LLM for follow-up — %r", email.subject)
+    response = model.invoke(prompt)
+    body = response.content if isinstance(response.content, str) else str(response.content)
+    return DraftReply(to=[to], subject=subject, body=body.strip(), thread_id=email.thread_id)

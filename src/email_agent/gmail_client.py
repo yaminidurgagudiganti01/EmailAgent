@@ -18,12 +18,24 @@ from .schemas import DraftReply, Email, ThreadMessage
 
 logger = logging.getLogger(__name__)
 
-# Read + compose + modify. No send — drafts only (safer default).
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.labels",
 ]
+
+# EmailAgent label namespace → Gmail label name
+CATEGORY_LABELS: dict[str, str] = {
+    "action_required": "EmailAgent/Urgent",
+    "reply_needed":    "EmailAgent/Work",
+    "meeting":         "EmailAgent/Meeting",
+    "fyi":             "EmailAgent/FYI",
+    "newsletter":      "EmailAgent/Newsletter",
+    "spam":            "EmailAgent/Spam",
+}
+
+_label_id_cache: dict[str, str] = {}  # name → Gmail label id
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -38,6 +50,43 @@ _gmail_retry = retry(
     stop=stop_after_attempt(4),
     reraise=True,
 )
+
+
+def _ensure_label(service, name: str) -> str:
+    """Return the Gmail label ID for `name`, creating it if it doesn't exist."""
+    if name in _label_id_cache:
+        return _label_id_cache[name]
+
+    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    for lbl in labels:
+        if lbl["name"] == name:
+            _label_id_cache[name] = lbl["id"]
+            return lbl["id"]
+
+    created = service.users().labels().create(
+        userId="me",
+        body={"name": name, "labelListVisibility": "labelShow",
+              "messageListVisibility": "show"},
+    ).execute()
+    _label_id_cache[name] = created["id"]
+    logger.debug("Created Gmail label %r (%s)", name, created["id"])
+    return created["id"]
+
+
+def apply_label(email_id: str, category: str) -> None:
+    """Apply the EmailAgent Gmail label matching `category` to an email."""
+    label_name = CATEGORY_LABELS.get(category)
+    if not label_name:
+        return
+    try:
+        service = _get_service()
+        label_id = _ensure_label(service, label_name)
+        service.users().messages().modify(
+            userId="me", id=email_id, body={"addLabelIds": [label_id]}
+        ).execute()
+        logger.debug("Applied label %r to email %s", label_name, email_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Label apply failed for %s: %s", email_id, e)
 
 
 def _get_service():
@@ -210,3 +259,113 @@ def save_draft(draft: DraftReply) -> str:
     draft_id = created["id"]
     logger.info("Saved Gmail draft %s — %r", draft_id, draft.subject)
     return draft_id
+
+
+@_gmail_retry
+def send_email(draft: DraftReply) -> str:
+    """Send an email immediately via Gmail. Returns the sent message ID."""
+    service = _get_service()
+
+    msg = EmailMessage()
+    msg["To"] = ", ".join(draft.to)
+    if draft.cc:
+        msg["Cc"] = ", ".join(draft.cc)
+    msg["Subject"] = draft.subject
+    msg.set_content(draft.body)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    body: dict[str, Any] = {"raw": raw}
+    if draft.thread_id:
+        body["threadId"] = draft.thread_id
+
+    sent = service.users().messages().send(userId="me", body=body).execute()
+    message_id = sent["id"]
+    logger.info("Sent email %s — %r", message_id, draft.subject)
+    return message_id
+
+
+@_gmail_retry
+def fetch_sent_no_reply(days: int = 3, max_results: int = 10) -> list[Email]:
+    """Return sent emails older than `days` days that received no reply."""
+    service = _get_service()
+
+    result = (
+        service.users()
+        .messages()
+        .list(userId="me", q=f"in:sent older_than:{days}d", maxResults=max_results * 4)
+        .execute()
+    )
+    message_ids = [m["id"] for m in result.get("messages", [])]
+
+    candidates: list[Email] = []
+    for mid in message_ids:
+        if len(candidates) >= max_results:
+            break
+        msg = service.users().messages().get(userId="me", id=mid, format="full").execute()
+        thread = (
+            service.users()
+            .threads()
+            .get(userId="me", id=msg["threadId"], format="minimal")
+            .execute()
+        )
+        if len(thread.get("messages", [])) > 1:
+            continue  # already has a reply
+
+        payload = msg.get("payload", {})
+        headers = _headers_to_dict(payload.get("headers", []))
+        candidates.append(
+            Email(
+                id=msg["id"],
+                thread_id=msg["threadId"],
+                from_addr=headers.get("from", ""),
+                to=_parse_addrs(headers.get("to", "")),
+                subject=headers.get("subject", ""),
+                snippet=msg.get("snippet", ""),
+                body=_extract_body(payload),
+                date=headers.get("date", ""),
+                labels=msg.get("labelIds", []),
+            )
+        )
+        logger.debug("Follow-up candidate: %s — %r", mid, headers.get("subject", ""))
+
+    logger.info("Found %d sent email(s) with no reply (>%d days)", len(candidates), days)
+    return candidates
+
+
+@_gmail_retry
+def fetch_sent_sample(max_results: int = 25) -> list[Email]:
+    """Fetch recent sent emails for writing-style analysis."""
+    service = _get_service()
+    result = (
+        service.users()
+        .messages()
+        .list(userId="me", q="in:sent", maxResults=max_results)
+        .execute()
+    )
+    message_ids = [m["id"] for m in result.get("messages", [])]
+
+    emails: list[Email] = []
+    for mid in message_ids:
+        msg = service.users().messages().get(userId="me", id=mid, format="full").execute()
+        payload = msg.get("payload", {})
+        headers = _headers_to_dict(payload.get("headers", []))
+        body = _extract_body(payload)
+        if not body.strip():
+            continue
+        emails.append(
+            Email(
+                id=msg["id"],
+                thread_id=msg["threadId"],
+                from_addr=headers.get("from", ""),
+                to=_parse_addrs(headers.get("to", "")),
+                subject=headers.get("subject", ""),
+                snippet=msg.get("snippet", ""),
+                body=body,
+                date=headers.get("date", ""),
+                labels=msg.get("labelIds", []),
+            )
+        )
+        logger.debug("Style sample: %s — %r", mid, headers.get("subject", ""))
+
+    logger.info("Fetched %d sent email(s) for style analysis", len(emails))
+    return emails

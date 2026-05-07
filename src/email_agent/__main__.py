@@ -1,9 +1,11 @@
-"""CLI entry point. Run:
+"""CLI entry point.
 
-    python -m email_agent              # process inbox, save all drafts automatically
-    python -m email_agent --approve    # review + approve each draft before saving
-    python -m email_agent --dry-run    # triage + draft but don't save anything
-    python -m email_agent --query "from:boss@example.com" --max 5
+    python -m email_agent                    # triage + save all drafts
+    python -m email_agent --approve          # review each draft: [A]draft [S]kip [E]send
+    python -m email_agent --dry-run          # triage only, save nothing
+    python -m email_agent --compose          # compose a brand-new email with AI
+    python -m email_agent --followup         # find sent emails with no reply and draft follow-ups
+    python -m email_agent --query "..." --max 5
 """
 from __future__ import annotations
 
@@ -12,34 +14,45 @@ import logging
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.table import Table
 
 from .config import settings
 from .log import setup_logging
 
-# Logging must be configured before any other local import that might log at import time.
 setup_logging(log_dir=settings.log_dir, fmt=settings.log_format)
 
 from .agent import build_graph, node_draft, node_fetch, node_triage  # noqa: E402
-from .gmail_client import save_draft                                  # noqa: E402
-from .store import mark_processed                                     # noqa: E402
+from .gmail_client import (                                           # noqa: E402
+    fetch_sent_no_reply,
+    save_draft,
+    send_email,
+)
+from .llm import compose_email, draft_reply, generate_followup        # noqa: E402
+from .store import mark_processed, mark_sent                          # noqa: E402
 
 logger = logging.getLogger(__name__)
 console = Console()
 
 
+# ---------------------------------------------------------------------------
+# Approve loop  (triage + draft + interactive review)
+# ---------------------------------------------------------------------------
+
 def _approve_loop(state: dict) -> list[str]:
-    """Interactively approve drafts one by one. Returns saved draft IDs."""
+    """Review each draft: [A] save to Gmail Drafts  [S] skip  [E] send now."""
     drafts = [(i, pe) for i, pe in enumerate(state["processed"]) if pe.draft]
 
     if not drafts:
         console.print("[yellow]No drafts to review.[/yellow]")
-        # Still mark non-draft emails as processed.
         for pe in state["processed"]:
             mark_processed(pe.email.id)
         return []
 
-    console.print(f"\n[bold]{len(drafts)} draft(s) to review[/bold]  —  [A]ccept · [S]kip\n")
+    console.print(
+        f"\n[bold]{len(drafts)} draft(s) to review[/bold]  —  "
+        "[A]ccept draft · [S]kip · [E]send now\n"
+    )
     saved: list[str] = []
     reviewed_ids: set[str] = set()
 
@@ -52,30 +65,45 @@ def _approve_loop(state: dict) -> list[str]:
         console.print(Panel(pe.draft.body, title="Draft body", border_style="green"))
 
         while True:
-            raw = console.input("\n[bold]Action[/bold] \\[A/s]: ").strip().lower()
-            choice = raw or "a"
+            choice = Prompt.ask("\n[bold]Action[/bold]", choices=["a", "s", "e"], default="a")
             if choice == "a":
                 try:
                     draft_id = save_draft(pe.draft)
                     saved.append(draft_id)
                     mark_processed(pe.email.id, draft_id)
                     reviewed_ids.add(pe.email.id)
-                    console.print(f"[green]✓ Saved[/green] ({draft_id[:8]}…)\n")
-                    logger.info("Approved and saved draft %s for email %s", draft_id, pe.email.id)
+                    console.print(f"[green]✓ Saved to Drafts[/green] ({draft_id[:8]}…)\n")
+                    logger.info("Saved draft %s for email %s", draft_id, pe.email.id)
                 except Exception as e:  # noqa: BLE001
                     console.print(f"[red]Save failed: {e}[/red]\n")
-                    logger.error("Save failed for %s: %s", pe.email.id, e)
                 break
+            elif choice == "e":
+                console.print(
+                    "[bold yellow]⚠ This will SEND the email immediately. Are you sure?[/bold yellow]"
+                )
+                confirm = Prompt.ask("Confirm send", choices=["yes", "no"], default="no")
+                if confirm == "yes":
+                    try:
+                        msg_id = send_email(pe.draft)
+                        mark_sent(
+                            msg_id,
+                            pe.email.id,
+                            pe.draft.subject,
+                            ", ".join(pe.draft.to),
+                        )
+                        mark_processed(pe.email.id, msg_id)
+                        reviewed_ids.add(pe.email.id)
+                        console.print(f"[bold green]✓ Sent[/bold green] ({msg_id[:8]}…)\n")
+                        logger.info("Sent email %s for email %s", msg_id, pe.email.id)
+                    except Exception as e:  # noqa: BLE001
+                        console.print(f"[red]Send failed: {e}[/red]\n")
+                    break
             elif choice == "s":
                 mark_processed(pe.email.id)
                 reviewed_ids.add(pe.email.id)
                 console.print("[dim]Skipped.[/dim]\n")
-                logger.info("Skipped draft for email %s", pe.email.id)
                 break
-            else:
-                console.print("[red]Enter A to accept or S to skip.[/red]")
 
-    # Mark any non-drafted emails as processed too.
     for pe in state["processed"]:
         if pe.email.id not in reviewed_ids:
             mark_processed(pe.email.id)
@@ -83,12 +111,112 @@ def _approve_loop(state: dict) -> list[str]:
     return saved
 
 
+# ---------------------------------------------------------------------------
+# Compose  (brand-new email)
+# ---------------------------------------------------------------------------
+
+def _compose_flow() -> None:
+    console.rule("[bold]Compose new email[/bold]")
+    to = Prompt.ask("[cyan]To[/cyan]")
+    subject = Prompt.ask("[cyan]Subject[/cyan]")
+    context = Prompt.ask("[cyan]Notes / context[/cyan] (what should the email say?)")
+
+    console.print("\n[dim]Generating draft…[/dim]")
+    try:
+        draft = compose_email(to=to, subject=subject, context=context)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]LLM error: {e}[/red]")
+        return
+
+    console.print(Panel(draft.body, title=f"To: {to} | Subject: {subject}", border_style="blue"))
+
+    choice = Prompt.ask("[bold]Action[/bold]", choices=["a", "e", "q"], default="a",
+                        show_choices=True)
+    # a=save draft, e=send now, q=quit
+    if choice == "a":
+        try:
+            draft_id = save_draft(draft)
+            console.print(f"[green]✓ Saved to Drafts[/green] ({draft_id[:8]}…)")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Save failed: {e}[/red]")
+    elif choice == "e":
+        confirm = Prompt.ask("Send now? [yes/no]", choices=["yes", "no"], default="no")
+        if confirm == "yes":
+            try:
+                msg_id = send_email(draft)
+                mark_sent(msg_id, None, draft.subject, to)
+                console.print(f"[bold green]✓ Sent[/bold green] ({msg_id[:8]}…)")
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]Send failed: {e}[/red]")
+    else:
+        console.print("[dim]Discarded.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# Follow-up  (sent emails with no reply)
+# ---------------------------------------------------------------------------
+
+def _followup_flow(days: int, max_emails: int) -> None:
+    console.rule(f"[bold]Follow-up check[/bold] — sent >{days}d ago, no reply")
+    console.print("[dim]Fetching sent emails…[/dim]")
+
+    try:
+        emails = fetch_sent_no_reply(days=days, max_results=max_emails)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Fetch failed: {e}[/red]")
+        return
+
+    if not emails:
+        console.print("[green]No follow-ups needed — all sent emails have replies.[/green]")
+        return
+
+    console.print(f"[yellow]{len(emails)} email(s) need a follow-up[/yellow]\n")
+
+    for i, email in enumerate(emails, 1):
+        console.rule(f"Follow-up {i}/{len(emails)}")
+        console.print(f"[cyan]To:[/cyan]      {', '.join(email.to)}")
+        console.print(f"[cyan]Subject:[/cyan] {email.subject}")
+        console.print(f"[cyan]Sent:[/cyan]    {email.date[:24]}")
+
+        draft = generate_followup(email, days=days)
+        console.print(Panel(draft.body, title="Follow-up draft", border_style="yellow"))
+
+        choice = Prompt.ask("[bold]Action[/bold]", choices=["a", "e", "s"], default="a")
+        if choice == "a":
+            try:
+                draft_id = save_draft(draft)
+                console.print(f"[green]✓ Saved to Drafts[/green] ({draft_id[:8]}…)\n")
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]Save failed: {e}[/red]\n")
+        elif choice == "e":
+            confirm = Prompt.ask("Send now? [yes/no]", choices=["yes", "no"], default="no")
+            if confirm == "yes":
+                try:
+                    msg_id = send_email(draft)
+                    mark_sent(msg_id, email.id, draft.subject, ", ".join(draft.to))
+                    console.print(f"[bold green]✓ Sent[/bold green] ({msg_id[:8]}…)\n")
+                except Exception as e:  # noqa: BLE001
+                    console.print(f"[red]Send failed: {e}[/red]\n")
+        else:
+            console.print("[dim]Skipped.[/dim]\n")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="OpenAI email triage + drafting agent")
-    parser.add_argument("--query", default=settings.inbox_query, help="Gmail search query")
+    parser = argparse.ArgumentParser(description="Email Agent — triage, draft, compose, send")
+    parser.add_argument("--query", default=settings.inbox_query)
     parser.add_argument("--max", type=int, default=settings.max_emails_per_run)
-    parser.add_argument("--dry-run", action="store_true", help="Triage + draft but don't save")
-    parser.add_argument("--approve", action="store_true", help="Review each draft before saving")
+    parser.add_argument("--dry-run", action="store_true", help="Triage + draft, save nothing")
+    parser.add_argument("--approve", action="store_true",
+                        help="Review each draft: [A]save [S]kip [E]send")
+    parser.add_argument("--compose", action="store_true", help="Compose a new email with AI")
+    parser.add_argument("--followup", action="store_true",
+                        help="Find sent emails with no reply and draft follow-ups")
+    parser.add_argument("--days", type=int, default=3,
+                        help="Days threshold for follow-up detection (default: 3)")
     args = parser.parse_args()
 
     try:
@@ -98,6 +226,18 @@ def main() -> None:
         raise SystemExit(1)
 
     logger.info("Email Agent starting — model=%s", settings.openai_model)
+
+    # ── Compose mode ──────────────────────────────────────────────────────────
+    if args.compose:
+        _compose_flow()
+        return
+
+    # ── Follow-up mode ────────────────────────────────────────────────────────
+    if args.followup:
+        _followup_flow(days=args.days, max_emails=args.max)
+        return
+
+    # ── Triage mode ───────────────────────────────────────────────────────────
     console.rule(f"[bold]Email Agent[/bold] — model={settings.openai_model}")
 
     initial = {
@@ -136,15 +276,12 @@ def main() -> None:
 
     if args.approve:
         saved_ids = _approve_loop(state)
-        console.print(f"\n[bold green]Saved {len(saved_ids)} draft(s) to Gmail.[/bold green]")
-        logger.info("Approve run complete — %d draft(s) saved", len(saved_ids))
+        console.print(f"\n[bold green]Done — {len(saved_ids)} draft(s) saved.[/bold green]")
     elif args.dry_run:
         console.print("\n[dim]Dry run — nothing saved.[/dim]")
-        logger.info("Dry run complete")
     else:
         n = len(state["saved_draft_ids"])
         console.print(f"\n[bold green]Saved {n} draft(s) to Gmail.[/bold green]")
-        logger.info("Run complete — %d draft(s) saved", n)
 
 
 if __name__ == "__main__":

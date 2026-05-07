@@ -22,5 +22,9 @@ psycopg2-binary>=2.9.0
 python-dotenv>=1.0.1
 rich>=13.9.0
 
-# UI
+# API server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# UI (legacy Streamlit, kept for local dev)
 streamlit>=1.41.0
