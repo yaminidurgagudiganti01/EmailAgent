@@ -1,0 +1,29 @@
+services:
+  email-agent:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    volumes:
+      # Gmail OAuth credentials (generated locally, then mounted read-only)
+      - ./config:/app/config:ro
+      # Persistent SQLite store + logs (only used when DATABASE_URL is not set)
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+# NOTE — Gmail OAuth
+# The container cannot open a browser for first-time OAuth consent.
+# Before running `docker compose up`, authenticate once locally:
+#
+#   python -m email_agent --dry-run
+#
+# This saves config/token.json which is then mounted into the container.

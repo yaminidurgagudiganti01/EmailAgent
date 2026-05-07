@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 
 from langchain_openai import ChatOpenAI
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import settings
 from .schemas import DraftReply, Email, TriageCategory, TriageDecision
@@ -40,6 +41,19 @@ Sign off with:
 """
 
 
+def _is_transient(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("rate limit", "timeout", "connection", "503", "502", "500", "overloaded"))
+
+
+_retry = retry(
+    retry=retry_if_exception(_is_transient),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
+
+
 def _llm(**kwargs) -> ChatOpenAI:
     return ChatOpenAI(
         model=settings.openai_model,
@@ -49,6 +63,7 @@ def _llm(**kwargs) -> ChatOpenAI:
     )
 
 
+@_retry
 def triage_email(email: Email) -> TriageDecision:
     """Run triage on a single email and return a structured decision."""
     logger.debug("Calling LLM for triage — %r", email.subject[:60])
@@ -68,6 +83,7 @@ def triage_email(email: Email) -> TriageDecision:
     return model.invoke(prompt)
 
 
+@_retry
 def draft_reply(
     email: Email,
     triage_reasoning: str,

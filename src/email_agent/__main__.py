@@ -18,7 +18,7 @@ from .config import settings
 from .log import setup_logging
 
 # Logging must be configured before any other local import that might log at import time.
-setup_logging(log_dir=settings.log_dir)
+setup_logging(log_dir=settings.log_dir, fmt=settings.log_format)
 
 from .agent import build_graph, node_draft, node_fetch, node_triage  # noqa: E402
 from .gmail_client import save_draft                                  # noqa: E402

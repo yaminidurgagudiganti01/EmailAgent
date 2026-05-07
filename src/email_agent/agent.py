@@ -93,14 +93,17 @@ def node_draft(state: AgentState) -> dict:
 def node_save(state: AgentState) -> dict:
     saved: list[str] = []
     for pe in state["processed"]:
-        draft_id: str | None = None
-        if pe.draft is not None:
-            try:
-                draft_id = save_draft(pe.draft)
-                saved.append(draft_id)
-            except Exception as e:  # noqa: BLE001
-                logger.error("Save failed for %r: %s", pe.draft.subject[:60], e)
-        mark_processed(pe.email.id, draft_id)
+        if pe.draft is None:
+            mark_processed(pe.email.id, None)
+            continue
+        try:
+            draft_id = save_draft(pe.draft)
+            saved.append(draft_id)
+            mark_processed(pe.email.id, draft_id)
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "Save failed for %r: %s — will retry next run", pe.draft.subject[:60], e
+            )
     return {"saved_draft_ids": saved}
 
 

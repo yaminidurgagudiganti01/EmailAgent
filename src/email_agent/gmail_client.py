@@ -10,6 +10,8 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from .config import settings
 from .schemas import DraftReply, Email, ThreadMessage
@@ -22,6 +24,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.modify",
 ]
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, HttpError):
+        return exc.resp.status in (429, 500, 502, 503)
+    return False
+
+
+_gmail_retry = retry(
+    retry=retry_if_exception(_is_retryable),
+    wait=wait_exponential(multiplier=1, min=2, max=60),
+    stop=stop_after_attempt(4),
+    reraise=True,
+)
 
 
 def _get_service():
@@ -129,6 +145,7 @@ def _fetch_thread_context(
     return context[-max_messages:]
 
 
+@_gmail_retry
 def fetch_emails(query: str | None = None, max_results: int | None = None) -> list[Email]:
     """Fetch emails matching the query."""
     service = _get_service()
@@ -172,6 +189,7 @@ def fetch_emails(query: str | None = None, max_results: int | None = None) -> li
     return emails
 
 
+@_gmail_retry
 def save_draft(draft: DraftReply) -> str:
     """Save a draft to Gmail. Returns the draft ID."""
     service = _get_service()

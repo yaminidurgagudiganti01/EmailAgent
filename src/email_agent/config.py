@@ -9,25 +9,44 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Project root is two levels above this file: src/email_agent/config.py → project root
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _abs(rel: str) -> Path:
+    p = Path(rel)
+    return p if p.is_absolute() else (_PROJECT_ROOT / p).resolve()
+
 
 @dataclass(frozen=True)
 class Settings:
+    # LLM
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
 
+    # Gmail
     gmail_credentials_path: Path = field(
-        default_factory=lambda: Path(os.getenv("GMAIL_CREDENTIALS_PATH", "./config/credentials.json"))
+        default_factory=lambda: _abs(os.getenv("GMAIL_CREDENTIALS_PATH", "config/credentials.json"))
     )
     gmail_token_path: Path = field(
-        default_factory=lambda: Path(os.getenv("GMAIL_TOKEN_PATH", "./config/token.json"))
-    )
-    store_path: Path = field(
-        default_factory=lambda: Path(os.getenv("STORE_PATH", "./data/processed.db"))
-    )
-    log_dir: Path = field(
-        default_factory=lambda: Path(os.getenv("LOG_DIR", "./logs"))
+        default_factory=lambda: _abs(os.getenv("GMAIL_TOKEN_PATH", "config/token.json"))
     )
 
+    # Storage — Postgres (Supabase) preferred; SQLite fallback when DATABASE_URL is empty
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
+    store_path: Path = field(
+        default_factory=lambda: _abs(os.getenv("STORE_PATH", "data/processed.db"))
+    )
+
+    # Logging
+    log_dir: Path = field(
+        default_factory=lambda: _abs(os.getenv("LOG_DIR", "logs"))
+    )
+    log_format: str = field(
+        default_factory=lambda: os.getenv("LOG_FORMAT", "text")  # "text" | "json"
+    )
+
+    # Agent behaviour
     max_emails_per_run: int = field(
         default_factory=lambda: int(os.getenv("MAX_EMAILS_PER_RUN", "10"))
     )
@@ -42,11 +61,10 @@ class Settings:
     )
 
     def validate(self) -> None:
-        """Raise ValueError early if required config is missing or invalid."""
         errors: list[str] = []
 
         if not self.openai_api_key:
-            errors.append("OPENAI_API_KEY is not set — add it to your .env file")
+            errors.append("OPENAI_API_KEY is not set")
 
         if not self.gmail_credentials_path.exists():
             errors.append(

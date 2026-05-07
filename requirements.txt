@@ -12,51 +12,15 @@ google-api-python-client>=2.160.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.1
 
+# Resilience
+tenacity>=8.2.0
+
+# Database (Postgres/Supabase)
+psycopg2-binary>=2.9.0
+
 # Runtime utilities
 python-dotenv>=1.0.1
 rich>=13.9.0
 
 # UI
-streamlit>=1.56.0
-
-# Dev (install with: pip install -r requirements.txt -r requirements-dev.txt)
-
-
-
-
-
-
-Good progress — the agent is running, it just needs your Gmail credentials. Follow these steps:
-
-1. Go to Google Cloud Console
-
-Open: https://console.cloud.google.com/
-2. Create a project & enable Gmail API
-
-Click Select a project → New Project → give it a name → Create
-Go to APIs & Services → Enable APIs and Services
-Search for Gmail API → click it → Enable
-3. Configure OAuth consent screen
-
-Go to APIs & Services → OAuth consent screen
-Choose External → Create
-Fill in App name (anything, e.g. Email Agent) and your email → Save and Continue (skip through the rest)
-Go to Test users → Add users → add yaminidurga.0109@gmail.com → Save
-4. Create credentials
-
-Go to APIs & Services → Credentials
-Click + Create Credentials → OAuth client ID
-Application type: Desktop app → Create
-Click Download JSON
-5. Save the file
-
-
-mkdir config
-# Move the downloaded file to:
-# C:\emailagent\config\credentials.json
-Rename the downloaded file to credentials.json and put it in C:\emailagent\config\.
-
-6. Run again — it will open a browser for sign-in
-
-
-python -m email_agent --dry-run
+streamlit>=1.41.0
