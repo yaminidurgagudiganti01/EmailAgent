@@ -240,13 +240,35 @@ with st.sidebar:
     )
 
     st.markdown('<div class="ea-sidebar-section">Search</div>', unsafe_allow_html=True)
-    query = st.text_input(
-        "Gmail query",
-        value=settings.inbox_query,
+
+    PRESETS: dict[str, str] = {
+        "Unread (last 3 days)":      "is:unread newer_than:3d",
+        "Unread inbox only":         "is:unread -category:promotions -category:social",
+        "All unread":                "is:unread",
+        "Important & unread":        "is:unread label:important",
+        "Unread with attachments":   "is:unread has:attachment newer_than:7d",
+        "From a specific person":    "is:unread from:",
+        "Custom query":              "__custom__",
+    }
+
+    selected_preset = st.selectbox(
+        "Query preset",
+        options=list(PRESETS.keys()),
         label_visibility="collapsed",
-        help="Standard Gmail search syntax, e.g. `is:unread newer_than:1d`",
-        placeholder="Gmail search query…",
     )
+    preset_val = PRESETS[selected_preset]
+
+    if preset_val == "__custom__":
+        query = st.text_input(
+            "Custom query",
+            value=settings.inbox_query,
+            label_visibility="collapsed",
+            placeholder="Gmail search query…",
+        )
+    else:
+        query = preset_val
+        st.markdown(f'<div class="ea-query-preview">{query}</div>', unsafe_allow_html=True)
+
     max_emails = st.slider("Max emails", min_value=1, max_value=50, value=settings.max_emails_per_run)
 
     st.markdown('<div class="ea-sidebar-section">Actions</div>', unsafe_allow_html=True)

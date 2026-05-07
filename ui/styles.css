@@ -1,30 +1,30 @@
 /* =========================================================================
-   Email Agent — UI styles
+   Email Agent — Light UI styles
    ========================================================================= */
 
 /* ---------- Design tokens ---------- */
 :root {
-    --ea-bg:          #0d0f18;
-    --ea-surface:     #151722;
-    --ea-surface-2:   #1c1f30;
-    --ea-surface-3:   #242840;
-    --ea-border:      #2a2d45;
-    --ea-border-soft: rgba(255,255,255,0.06);
+    --ea-bg:          #f8fafc;
+    --ea-surface:     #ffffff;
+    --ea-surface-2:   #f1f5f9;
+    --ea-surface-3:   #e8edf5;
+    --ea-border:      #e2e8f0;
+    --ea-border-soft: rgba(0,0,0,0.06);
 
-    --ea-text:        #eaecf4;
-    --ea-text-muted:  #7a80a0;
-    --ea-text-dim:    #4a5070;
+    --ea-text:        #0f172a;
+    --ea-text-muted:  #475569;
+    --ea-text-dim:    #94a3b8;
 
-    --ea-accent:      #6c6fff;
-    --ea-accent-2:    #8b8dff;
-    --ea-accent-glow: rgba(108,111,255,0.20);
+    --ea-accent:      #6366f1;
+    --ea-accent-2:    #818cf8;
+    --ea-accent-glow: rgba(99,102,241,0.15);
 
-    --ea-green:  #3dd68c;
-    --ea-blue:   #5ba4f5;
-    --ea-amber:  #f5a623;
-    --ea-purple: #a78bfa;
+    --ea-green:  #10b981;
+    --ea-blue:   #3b82f6;
+    --ea-amber:  #f59e0b;
+    --ea-purple: #8b5cf6;
     --ea-slate:  #64748b;
-    --ea-red:    #f05252;
+    --ea-red:    #ef4444;
 
     --ea-radius:    12px;
     --ea-radius-sm: 8px;
@@ -61,7 +61,7 @@
     align-items: center;
     gap: 10px;
     padding: 20px 20px 18px 20px;
-    background: linear-gradient(135deg, var(--ea-surface-2) 0%, var(--ea-surface) 100%);
+    background: linear-gradient(135deg, #eef2ff 0%, #ffffff 100%);
     border-bottom: 1px solid var(--ea-border);
     margin-bottom: 8px;
 }
@@ -103,6 +103,18 @@
     padding: 14px 4px 6px 4px;
 }
 
+.ea-query-preview {
+    font-size: 0.72rem;
+    font-family: "SF Mono", Monaco, Consolas, monospace;
+    color: var(--ea-accent);
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: var(--ea-radius-xs);
+    padding: 4px 8px;
+    margin: 4px 0 8px 0;
+    word-break: break-all;
+}
+
 /* ---------- Page header ---------- */
 .ea-header {
     display: flex;
@@ -124,7 +136,7 @@
     height: 8px;
     border-radius: 50%;
     background: var(--ea-green);
-    box-shadow: 0 0 8px var(--ea-green);
+    box-shadow: 0 0 8px rgba(16,185,129,0.4);
     flex-shrink: 0;
 }
 
@@ -175,13 +187,14 @@
     padding: 14px 16px;
     position: relative;
     overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
 .ea-stat::before {
     content: "";
     position: absolute;
     top: 0; left: 0; right: 0;
-    height: 2px;
+    height: 3px;
     border-radius: var(--ea-radius) var(--ea-radius) 0 0;
 }
 
@@ -216,11 +229,12 @@
     margin-bottom: 12px;
     overflow: hidden;
     transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
 .ea-card:hover {
-    border-color: rgba(108,111,255,0.4);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    border-color: rgba(99,102,241,0.4);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
 }
 
 .ea-card-inner {
@@ -295,20 +309,20 @@
     letter-spacing: 0.05em;
 }
 
-.ea-badge-reply_needed   { background: rgba(61,214,140,0.12);  color: var(--ea-green);  border: 1px solid rgba(61,214,140,0.25); }
-.ea-badge-meeting        { background: rgba(91,164,245,0.12);  color: var(--ea-blue);   border: 1px solid rgba(91,164,245,0.25); }
-.ea-badge-action_required{ background: rgba(245,166,35,0.12);  color: var(--ea-amber);  border: 1px solid rgba(245,166,35,0.25); }
-.ea-badge-fyi            { background: rgba(100,116,139,0.12); color: var(--ea-slate);  border: 1px solid rgba(100,116,139,0.2); }
-.ea-badge-newsletter     { background: rgba(167,139,250,0.12); color: var(--ea-purple); border: 1px solid rgba(167,139,250,0.25); }
-.ea-badge-spam           { background: rgba(240,82,82,0.12);   color: var(--ea-red);    border: 1px solid rgba(240,82,82,0.25); }
+.ea-badge-reply_needed    { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+.ea-badge-meeting         { background: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
+.ea-badge-action_required { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.ea-badge-fyi             { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.ea-badge-newsletter      { background: #ede9fe; color: #5b21b6; border: 1px solid #ddd6fe; }
+.ea-badge-spam            { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
 
-.ea-badge-prio-high   { background: rgba(240,82,82,0.12);  color: var(--ea-red);   border: 1px solid rgba(240,82,82,0.25); }
-.ea-badge-prio-medium { background: rgba(245,166,35,0.12); color: var(--ea-amber); border: 1px solid rgba(245,166,35,0.25); }
-.ea-badge-prio-low    { background: rgba(100,116,139,0.1); color: var(--ea-slate); border: 1px solid rgba(100,116,139,0.2); }
+.ea-badge-prio-high   { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.ea-badge-prio-medium { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.ea-badge-prio-low    { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
 
 /* ---------- Reasoning ---------- */
 .ea-reasoning {
-    background: var(--ea-surface-2);
+    background: #f8faff;
     border-left: 2px solid var(--ea-accent);
     padding: 8px 12px;
     border-radius: 0 var(--ea-radius-xs) var(--ea-radius-xs) 0;
@@ -320,7 +334,7 @@
 
 .ea-reasoning-label {
     font-weight: 700;
-    color: var(--ea-accent-2);
+    color: var(--ea-accent);
     text-transform: uppercase;
     font-size: 0.65rem;
     letter-spacing: 0.07em;
@@ -329,8 +343,8 @@
 
 /* ---------- Draft section ---------- */
 .ea-draft-block {
-    background: var(--ea-surface-2);
-    border-top: 1px solid var(--ea-border);
+    background: #f0fdf4;
+    border-top: 1px solid #bbf7d0;
     padding: 14px 18px;
 }
 
@@ -350,7 +364,7 @@
 .ea-log {
     font-family: "SF Mono", Monaco, Consolas, monospace;
     font-size: 0.8rem;
-    background: var(--ea-surface);
+    background: #f8fafc;
     border: 1px solid var(--ea-border);
     border-radius: var(--ea-radius-sm);
     padding: 10px 14px;
@@ -361,11 +375,11 @@
     margin-bottom: 16px;
 }
 
-.ea-log-line  { margin: 0; white-space: pre-wrap; }
+.ea-log-line   { margin: 0; white-space: pre-wrap; }
 .ea-log-fetch  { color: var(--ea-blue); }
-.ea-log-triage { color: var(--ea-amber); }
+.ea-log-triage { color: #d97706; }
 .ea-log-draft  { color: var(--ea-green); }
-.ea-log-save   { color: var(--ea-accent-2); }
+.ea-log-save   { color: var(--ea-accent); }
 .ea-log-error  { color: var(--ea-red); }
 
 .ea-log::-webkit-scrollbar { width: 5px; }
@@ -382,7 +396,7 @@
     font-size: 3.5rem;
     margin-bottom: 16px;
     display: block;
-    filter: grayscale(0.4) opacity(0.6);
+    filter: grayscale(0.2) opacity(0.7);
 }
 
 .ea-empty-title {
@@ -398,27 +412,6 @@
     max-width: 340px;
     margin: 0 auto;
     line-height: 1.6;
-}
-
-/* ---------- Filter bar ---------- */
-.ea-filter-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    background: var(--ea-surface);
-    border: 1px solid var(--ea-border);
-    border-radius: var(--ea-radius-sm);
-    margin-bottom: 16px;
-    font-size: 0.82rem;
-    color: var(--ea-text-muted);
-}
-
-/* ---------- Divider ---------- */
-.ea-divider {
-    border: none;
-    border-top: 1px solid var(--ea-border);
-    margin: 16px 0;
 }
 
 /* ---------- Button overrides ---------- */
@@ -438,13 +431,13 @@
 }
 
 .stButton > button[kind="primary"]:hover {
-    filter: brightness(1.12);
+    filter: brightness(1.08);
     transform: translateY(-1px);
     box-shadow: 0 4px 16px var(--ea-accent-glow) !important;
 }
 
 .stButton > button:not([kind="primary"]) {
-    background: var(--ea-surface-2) !important;
+    background: var(--ea-surface) !important;
     color: var(--ea-text-muted) !important;
 }
 
@@ -455,8 +448,9 @@
 
 /* ---------- Input / select overrides ---------- */
 .stTextInput > div > div > input,
-.stTextArea > div > div > textarea {
-    background: var(--ea-surface-2) !important;
+.stTextArea > div > div > textarea,
+.stSelectbox > div > div {
+    background: var(--ea-surface) !important;
     border: 1px solid var(--ea-border) !important;
     border-radius: var(--ea-radius-sm) !important;
     color: var(--ea-text) !important;
