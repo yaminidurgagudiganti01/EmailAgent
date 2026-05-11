@@ -1,6 +1,9 @@
 """FastAPI backend — exposes all agent capabilities as a REST API."""
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -19,18 +22,54 @@ from .store import (
     get_exclude_rules,
     get_kb,
     get_style_profile,
+    has_followup_draft,
     is_excluded,
     log_email,
     mark_processed,
     mark_sent,
     processed_count,
+    record_followup_draft,
     remove_exclude_rule,
     save_style_profile,
     sent_count,
+    update_followup_status,
     update_log_sent,
 )
 
-app = FastAPI(title="Email Agent API", version="1.0.0")
+logger = logging.getLogger(__name__)
+
+# Max concurrent LLM calls per /run
+_SEM = asyncio.Semaphore(5)
+
+DRAFT_CATEGORIES = {
+    TriageCategory.REPLY_NEEDED,
+    TriageCategory.MEETING,
+    TriageCategory.ACTION_REQUIRED,
+}
+
+
+# ── Scheduler ─────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if settings.schedule_interval_minutes > 0:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            _scheduled_run,
+            "interval",
+            minutes=settings.schedule_interval_minutes,
+            id="inbox_run",
+        )
+        scheduler.start()
+        logger.info("Scheduler started — inbox run every %d min", settings.schedule_interval_minutes)
+        yield
+        scheduler.shutdown()
+    else:
+        yield
+
+
+app = FastAPI(title="Email Agent API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,14 +79,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DRAFT_CATEGORIES = {
-    TriageCategory.REPLY_NEEDED,
-    TriageCategory.MEETING,
-    TriageCategory.ACTION_REQUIRED,
-}
 
-
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class RunRequest(BaseModel):
     query: str = settings.inbox_query
@@ -81,67 +114,74 @@ class FollowupRequest(BaseModel):
     max_emails: int = 10
 
 
-# ── Health ────────────────────────────────────────────────────────────────────
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "model": settings.openai_model}
-
-
-# ── Stats ─────────────────────────────────────────────────────────────────────
-
-@app.get("/stats")
-def stats() -> dict:
-    return {
-        "processed": processed_count(),
-        "sent": sent_count(),
-    }
+class FollowupDraftRequest(BaseModel):
+    email_id: str
+    to: list[str]
+    subject: str
+    snippet: str
+    thread_id: str | None = None
+    days: int = 3
 
 
-# ── Run pipeline ──────────────────────────────────────────────────────────────
+class FollowupStatusRequest(BaseModel):
+    status: str  # "sent" | "dismissed"
 
-@app.post("/run")
-def run_pipeline(req: RunRequest) -> dict[str, Any]:
-    rules         = get_exclude_rules()
-    style_profile = get_style_profile()
-    kb_entries    = get_kb()
-    kb_context    = "\n\n".join(f"### {e['title']}\n{e['content']}" for e in kb_entries) or None
-    emails        = fetch_emails(query=req.query, max_results=req.max_emails)
 
-    results = []
-    for email in emails:
-        # Exclude rules check
-        skip_draft = False
-        decision = triage_email(email)
+class KbRequest(BaseModel):
+    title: str
+    content: str
 
-        if is_excluded(email.from_addr, decision.category.value, rules):
-            skip_draft = True
 
-        draft_id: str | None = None
+# ── Core pipeline ─────────────────────────────────────────────────────────────
+
+async def _process_one(
+    email,
+    rules: list[dict],
+    style_profile: str | None,
+    kb_context: str | None,
+    apply_labels: bool,
+    mark_as_read: bool,
+) -> dict[str, Any]:
+    """Triage and optionally draft a reply for a single email."""
+    async with _SEM:
+        try:
+            decision = await asyncio.to_thread(triage_email, email)
+        except Exception as e:
+            logger.error("Triage failed for %s: %s", email.id, e)
+            return {"email_id": email.id, "subject": email.subject, "error": str(e)}
+
+        skip_draft = is_excluded(email.from_addr, decision.category.value, rules)
+        needs_review = decision.confidence < settings.confidence_threshold
+
         draft_data: dict | None = None
+        draft_id: str | None = None
 
-        if not skip_draft and decision.category in DRAFT_CATEGORIES:
-            draft = draft_reply(
-                email, decision.reasoning,
-                category=decision.category,
-                style_profile=style_profile,
-                kb_context=kb_context,
-            )
-            draft_data = {
-                "to": draft.to,
-                "cc": draft.cc,
-                "subject": draft.subject,
-                "body": draft.body,
-                "thread_id": draft.thread_id,
-            }
+        if not skip_draft and not needs_review and decision.category in DRAFT_CATEGORIES:
+            try:
+                draft = await asyncio.to_thread(
+                    draft_reply, email, decision.reasoning,
+                    decision.category, style_profile, kb_context,
+                )
+                draft_data = {
+                    "to": draft.to,
+                    "cc": draft.cc,
+                    "subject": draft.subject,
+                    "body": draft.body,
+                    "thread_id": draft.thread_id,
+                }
+            except Exception as e:
+                logger.error("Draft failed for %s: %s", email.id, e)
 
-        if req.apply_labels:
-            apply_label(email.id, decision.category.value)
+        if apply_labels:
+            try:
+                await asyncio.to_thread(apply_label, email.id, decision.category.value)
+            except Exception as e:
+                logger.warning("Label failed for %s: %s", email.id, e)
 
-        if req.mark_as_read:
+        if mark_as_read:
             try:
                 from .gmail_client import _get_service
-                svc = _get_service()
+                svc = await asyncio.to_thread(_get_service)
                 svc.users().messages().modify(
                     userId="me", id=email.id, body={"removeLabelIds": ["UNREAD"]}
                 ).execute()
@@ -157,21 +197,87 @@ def run_pipeline(req: RunRequest) -> dict[str, Any]:
             draft_id=draft_id,
         )
 
-        results.append({
-            "email_id":  email.id,
-            "from_addr": email.from_addr,
-            "subject":   email.subject,
-            "date":      email.date,
-            "snippet":   email.snippet,
-            "category":  decision.category.value,
-            "priority":  decision.priority,
-            "reasoning": decision.reasoning,
+        return {
+            "email_id":       email.id,
+            "from_addr":      email.from_addr,
+            "subject":        email.subject,
+            "date":           email.date,
+            "snippet":        email.snippet,
+            "category":       decision.category.value,
+            "priority":       decision.priority,
+            "confidence":     decision.confidence,
+            "needs_review":   needs_review,
+            "reasoning":      decision.reasoning,
             "suggested_action": decision.suggested_action,
-            "excluded":  skip_draft,
-            "draft":     draft_data,
-        })
+            "excluded":       skip_draft,
+            "draft":          draft_data,
+        }
 
-    return {"count": len(results), "emails": results}
+
+async def _run_inbox(
+    query: str, max_emails: int, apply_labels: bool, mark_as_read: bool
+) -> dict[str, Any]:
+    rules         = get_exclude_rules()
+    style_profile = get_style_profile()
+    kb_entries    = get_kb()
+    kb_context    = "\n\n".join(f"### {e['title']}\n{e['content']}" for e in kb_entries) or None
+    emails        = await asyncio.to_thread(fetch_emails, query=query, max_results=max_emails)
+
+    results = await asyncio.gather(
+        *[_process_one(e, rules, style_profile, kb_context, apply_labels, mark_as_read)
+          for e in emails],
+        return_exceptions=True,
+    )
+    # Convert any unhandled exceptions into error entries instead of crashing
+    safe = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.error("Unhandled error in _process_one: %s", r)
+            safe.append({"error": str(r)})
+        else:
+            safe.append(r)
+    return {"count": len(safe), "emails": safe}
+
+
+async def _scheduled_run() -> None:
+    logger.info("Scheduled inbox run starting")
+    try:
+        await _run_inbox(settings.inbox_query, settings.max_emails_per_run, True, False)
+        logger.info("Scheduled inbox run complete")
+    except Exception as e:
+        logger.error("Scheduled run failed: %s", e)
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health() -> dict:
+    return {
+        "status": "ok",
+        "model": settings.openai_model,
+        "scheduler": (
+            f"every {settings.schedule_interval_minutes}min"
+            if settings.schedule_interval_minutes > 0 else "off"
+        ),
+    }
+
+
+# ── Stats ─────────────────────────────────────────────────────────────────────
+
+@app.get("/stats")
+def stats() -> dict:
+    return {"processed": processed_count(), "sent": sent_count()}
+
+
+# ── Run pipeline ──────────────────────────────────────────────────────────────
+
+@app.post("/run")
+async def run_pipeline(req: RunRequest) -> dict[str, Any]:
+    try:
+        return await _run_inbox(req.query, req.max_emails, req.apply_labels, req.mark_as_read)
+    except Exception as e:
+        logger.exception("Pipeline failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Save draft ────────────────────────────────────────────────────────────────
@@ -206,7 +312,6 @@ def api_send_email(req: SendRequest) -> dict:
             mark_processed(req.email_id, msg_id)
             update_log_sent(req.email_id)
         else:
-            # Compose flow — no prior log entry; create one now
             log_email(
                 email_id=msg_id,
                 from_addr="me",
@@ -243,37 +348,38 @@ def api_compose(req: ComposeRequest) -> dict:
 @app.post("/followups/scan")
 def api_scan_followups(req: FollowupRequest) -> dict:
     emails = fetch_sent_no_reply(days=req.days, max_results=req.max_emails)
+    # Filter threads already tracked to avoid duplicate nudges
+    candidates = [e for e in emails if not has_followup_draft(e.thread_id)]
     return {
-        "count": len(emails),
+        "count": len(candidates),
         "emails": [
             {
                 "email_id": e.id,
-                "to": e.to,
-                "subject": e.subject,
-                "date": e.date,
-                "snippet": e.snippet,
+                "to":       e.to,
+                "subject":  e.subject,
+                "date":     e.date,
+                "snippet":  e.snippet,
                 "thread_id": e.thread_id,
             }
-            for e in emails
+            for e in candidates
         ],
     }
 
 
-class FollowupDraftRequest(BaseModel):
-    email_id: str
-    to: list[str]
-    subject: str
-    snippet: str
-    thread_id: str | None = None
-    days: int = 3
-
-
 @app.post("/followups/draft")
 def api_followup_draft(req: FollowupDraftRequest) -> dict:
+    thread_id = req.thread_id or req.email_id
+
+    if has_followup_draft(thread_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A follow-up draft already exists for this thread. Send or dismiss it first.",
+        )
+
     from .schemas import Email as EmailSchema
     stub = EmailSchema(
         id=req.email_id,
-        thread_id=req.thread_id or req.email_id,
+        thread_id=thread_id,
         from_addr="me",
         to=req.to,
         subject=req.subject,
@@ -281,8 +387,22 @@ def api_followup_draft(req: FollowupDraftRequest) -> dict:
         body=req.snippet,
     )
     draft = generate_followup(stub, days=req.days)
-    return {"to": draft.to, "subject": draft.subject, "body": draft.body,
-            "thread_id": draft.thread_id}
+    record_followup_draft(thread_id, req.email_id)
+
+    return {
+        "to":        draft.to,
+        "subject":   draft.subject,
+        "body":      draft.body,
+        "thread_id": draft.thread_id,
+    }
+
+
+@app.patch("/followups/{thread_id}")
+def api_update_followup(thread_id: str, req: FollowupStatusRequest) -> dict:
+    if req.status not in ("sent", "dismissed"):
+        raise HTTPException(status_code=400, detail="status must be 'sent' or 'dismissed'")
+    update_followup_status(thread_id, req.status)
+    return {"ok": True}
 
 
 # ── Conversations ─────────────────────────────────────────────────────────────
@@ -317,14 +437,13 @@ def api_delete_rule(rule_id: int) -> dict:
 
 @app.get("/style")
 def api_get_style() -> dict:
-    profile = get_style_profile()
-    return {"profile": profile}
+    return {"profile": get_style_profile()}
 
 
 @app.post("/style/learn")
 def api_learn_style() -> dict:
     try:
-        emails = fetch_sent_sample(max_results=25)
+        emails = fetch_sent_sample()
         if not emails:
             raise HTTPException(status_code=404, detail="No sent emails found to analyse")
         profile = analyze_style(emails)
@@ -337,11 +456,6 @@ def api_learn_style() -> dict:
 
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
-
-class KbRequest(BaseModel):
-    title: str
-    content: str
-
 
 @app.get("/kb")
 def api_get_kb() -> dict:

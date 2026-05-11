@@ -67,8 +67,20 @@ export default function FollowupsTab() {
                             thread_id: d.thread_id ?? undefined, email_id: e.email_id });
       setSent(s => new Set([...s, e.email_id]));
       setConfirm(null);
+      const tid = e.thread_id || e.email_id;
+      if (tid) api.updateFollowupStatus(tid, "sent").catch(() => {});
     } catch (err: unknown) {
       alert("Send failed: " + (err instanceof Error ? err.message : err));
+    }
+  }
+
+  async function dismiss(e: FollowupEmail) {
+    const tid = e.thread_id || e.email_id;
+    try {
+      if (tid) await api.updateFollowupStatus(tid, "dismissed");
+      setEmails(prev => prev.filter(x => x.email_id !== e.email_id));
+    } catch (err: unknown) {
+      alert("Dismiss failed: " + (err instanceof Error ? err.message : err));
     }
   }
 
@@ -127,10 +139,16 @@ export default function FollowupsTab() {
               <p className="text-sm text-slate-500 line-clamp-2">{e.snippet}</p>
 
               {!d && !sentIds.has(e.email_id) && !savedIds.has(e.email_id) && (
-                <button onClick={() => generateDraft(e)} disabled={draftLoading[e.email_id]}
-                  className="mt-3 px-3 py-1.5 bg-indigo-500 text-white text-sm rounded-lg hover:bg-indigo-600 font-semibold disabled:opacity-60">
-                  {draftLoading[e.email_id] ? "Generating…" : "✍️ Generate Follow-up"}
-                </button>
+                <div className="mt-3 flex gap-2">
+                  <button onClick={() => generateDraft(e)} disabled={draftLoading[e.email_id]}
+                    className="px-3 py-1.5 bg-indigo-500 text-white text-sm rounded-lg hover:bg-indigo-600 font-semibold disabled:opacity-60">
+                    {draftLoading[e.email_id] ? "Generating…" : "✍️ Generate Follow-up"}
+                  </button>
+                  <button onClick={() => dismiss(e)}
+                    className="px-3 py-1.5 bg-slate-100 text-slate-600 text-sm rounded-lg hover:bg-slate-200">
+                    Dismiss
+                  </button>
+                </div>
               )}
             </div>
 

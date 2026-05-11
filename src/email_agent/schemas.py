@@ -29,6 +29,7 @@ class Email(BaseModel):
     date: str = ""
     labels: list[str] = Field(default_factory=list)
     thread_messages: list[ThreadMessage] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
 
 
 class TriageCategory(str, Enum):
@@ -45,6 +46,10 @@ class TriageDecision(BaseModel):
 
     category: TriageCategory
     priority: Literal["high", "medium", "low"]
+    confidence: float = Field(
+        default=0.8,
+        description="Confidence in this classification, 0.0-1.0. Use <0.7 when the email is ambiguous.",
+    )
     reasoning: str = Field(description="One-sentence justification.")
     suggested_action: str = Field(
         description="What the user should do (e.g. 'draft a reply declining').",

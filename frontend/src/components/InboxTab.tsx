@@ -70,8 +70,9 @@ export default function InboxTab() {
     }
   }
 
-  const drafted = emails.filter(e => e.draft).length;
-  const high    = emails.filter(e => e.priority === "high").length;
+  const drafted     = emails.filter(e => e.draft).length;
+  const high        = emails.filter(e => e.priority === "high").length;
+  const needsReview = emails.filter(e => e.needs_review).length;
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -83,6 +84,7 @@ export default function InboxTab() {
             <span>{emails.length} processed</span>
             <span>{drafted} drafts</span>
             <span>{high} high priority</span>
+            {needsReview > 0 && <span className="text-amber-600">{needsReview} need review</span>}
             <span>{sentIds.size} sent</span>
           </div>
         )}
@@ -140,10 +142,16 @@ export default function InboxTab() {
           key={e.email_id}
           className={clsx(
             "bg-white rounded-xl border border-slate-200 overflow-hidden",
-            e.priority === "high"   && "border-l-4 border-l-red-400",
-            e.priority === "medium" && "border-l-4 border-l-amber-400",
+            e.needs_review          && "border-l-4 border-l-amber-400",
+            !e.needs_review && e.priority === "high"   && "border-l-4 border-l-red-400",
+            !e.needs_review && e.priority === "medium" && "border-l-4 border-l-amber-300",
           )}
         >
+          {e.error ? (
+            <div className="p-4 text-sm text-red-600 bg-red-50">
+              <span className="font-semibold">Triage failed:</span> {e.error}
+            </div>
+          ) : (
           <div className="p-4">
             <div className="flex justify-between items-start mb-1">
               <span className="font-semibold text-sm text-slate-800 truncate">{e.from_addr}</span>
@@ -151,19 +159,27 @@ export default function InboxTab() {
             </div>
             <p className="font-semibold text-slate-900 mb-1">{e.subject || "(no subject)"}</p>
             <p className="text-sm text-slate-500 line-clamp-2 mb-3">{e.snippet}</p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <CategoryBadge cat={e.category} />
               <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
                 {PRIORITY_ICON[e.priority]} {e.priority}
               </span>
-              {e.excluded && <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">excluded</span>}
+              <ConfidenceBadge confidence={e.confidence} />
+              {e.excluded    && <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700">excluded</span>}
+              {e.needs_review && <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">⚠ needs review</span>}
             </div>
             <p className="mt-2 text-xs text-indigo-600 bg-indigo-50 rounded px-2 py-1">
               <span className="font-bold">WHY </span>{e.reasoning}
             </p>
+            {e.needs_review && (
+              <p className="mt-1 text-xs text-amber-700 bg-amber-50 rounded px-2 py-1">
+                Low confidence — no draft created. Review manually.
+              </p>
+            )}
           </div>
+          )}
 
-          {e.draft && !e.excluded && (
+          {!e.error && e.draft && !e.excluded && !e.needs_review && (
             <div className="border-t border-slate-100 bg-green-50 p-4 space-y-2">
               <p className="text-xs font-bold text-green-700 uppercase tracking-wide">🤖 AI Draft</p>
               <input
@@ -232,6 +248,18 @@ function CategoryBadge({ cat }: { cat: string }) {
   return (
     <span className={clsx("text-xs px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide", styles[cat] ?? "bg-slate-100 text-slate-600")}>
       {cat.replace("_", " ")}
+    </span>
+  );
+}
+
+function ConfidenceBadge({ confidence }: { confidence: number }) {
+  const pct = Math.round((confidence ?? 0) * 100);
+  const cls = pct >= 70
+    ? "bg-green-50 text-green-600"
+    : "bg-amber-50 text-amber-600";
+  return (
+    <span className={clsx("text-xs px-2 py-0.5 rounded-full", cls)}>
+      {pct}% confidence
     </span>
   );
 }

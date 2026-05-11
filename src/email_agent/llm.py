@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_openai import ChatOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -12,11 +13,12 @@ from .schemas import DraftReply, Email, TriageCategory, TriageDecision
 logger = logging.getLogger(__name__)
 
 TRIAGE_SYSTEM = """You are an email triage assistant for {user}.
-Classify the incoming email and decide what action is needed. Be conservative: \
-only label something "reply_needed" if the sender is a real person expecting a \
-response (not automated mail). Newsletters, receipts, notifications, and \
-marketing go in "newsletter" or "fyi".
-Return your decision in the required structured format."""
+Classify the incoming email and decide what action is needed. Use all available signals:
+- If the user is CC'd (not TO), they rarely need to act — prefer "fyi"
+- Attachments like PDFs/contracts/invoices raise priority and may require action
+- Automated senders (no-reply, notifications, receipts) go in "newsletter" or "fyi"
+- Be conservative: only label "reply_needed" if a real person expects a response
+Return your decision including a confidence score 0.0-1.0. Use <0.7 when ambiguous."""
 
 DRAFT_SYSTEM = """You are drafting an email reply on behalf of {user}.
 Write in a natural, professional but warm tone. Keep it concise — usually \
@@ -71,6 +73,19 @@ Sign off with:
 """
 
 
+_PII_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'\b\d{3}-\d{2}-\d{4}\b'), "[SSN]"),
+    (re.compile(r'\b(?:\d{4}[\s\-]?){3}\d{4}\b'), "[CC_NUMBER]"),
+    (re.compile(r'\b(\+?1[\s.\-]?)?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b'), "[PHONE]"),
+]
+
+
+def scrub_pii(text: str) -> str:
+    for pattern, placeholder in _PII_PATTERNS:
+        text = pattern.sub(placeholder, text)
+    return text
+
+
 def _is_transient(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(kw in msg for kw in ("rate limit", "timeout", "connection", "503", "502", "500", "overloaded"))
@@ -99,15 +114,32 @@ def triage_email(email: Email) -> TriageDecision:
     logger.debug("Calling LLM for triage — %r", email.subject[:60])
     model = _llm(temperature=0.0).with_structured_output(TriageDecision)
 
+    sender_domain = (
+        email.from_addr.split("@")[-1].rstrip(">").strip()
+        if "@" in email.from_addr else "unknown"
+    )
+    # Determine if user is direct recipient or CC'd
+    user_lower = settings.user_name.lower()
+    is_direct = any(user_lower in addr.lower() for addr in email.to)
+    recipient_type = "TO (direct recipient)" if is_direct else "CC (copied)"
+    attachment_line = (
+        f"Attachments: {', '.join(email.attachments)}"
+        if email.attachments else "No attachments"
+    )
+
     prompt = [
         ("system", TRIAGE_SYSTEM.format(user=settings.user_name)),
         (
             "human",
             f"From: {email.from_addr}\n"
-            f"Subject: {email.subject}\n"
+            f"To: {', '.join(email.to)}\n"
+            f"CC: {', '.join(email.cc) if email.cc else 'none'}\n"
+            f"Recipient type: {recipient_type}\n"
+            f"Sender domain: {sender_domain}\n"
             f"Date: {email.date}\n"
-            f"Labels: {', '.join(email.labels)}\n\n"
-            f"Body:\n{email.body[:4000]}",
+            f"Labels: {', '.join(email.labels)}\n"
+            f"{attachment_line}\n\n"
+            f"Body:\n{scrub_pii(email.body[:4000])}",
         ),
     ]
     return model.invoke(prompt)
@@ -166,7 +198,7 @@ def draft_reply(
             f"Incoming email:\n"
             f"From: {email.from_addr}\n"
             f"Subject: {email.subject}\n\n"
-            f"{email.body[:4000]}"
+            f"{scrub_pii(email.body[:4000])}"
             f"{thread_section}\n\n"
             f"{instruction}",
         ),

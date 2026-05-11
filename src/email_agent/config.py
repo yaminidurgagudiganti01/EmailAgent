@@ -59,6 +59,14 @@ class Settings:
     user_signature: str = field(
         default_factory=lambda: os.getenv("USER_SIGNATURE", "Best,\nMe").replace("\\n", "\n")
     )
+    # 0 = scheduler disabled; >0 = run every N minutes automatically
+    schedule_interval_minutes: int = field(
+        default_factory=lambda: int(os.getenv("SCHEDULE_INTERVAL_MINUTES", "0"))
+    )
+    # Triage decisions below this threshold are flagged for human review (no auto-draft)
+    confidence_threshold: float = field(
+        default_factory=lambda: float(os.getenv("CONFIDENCE_THRESHOLD", "0.7"))
+    )
 
     def validate(self) -> None:
         errors: list[str] = []

@@ -149,6 +149,17 @@ def _extract_body(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _detect_attachments(payload: dict[str, Any]) -> list[str]:
+    """Return filenames of real attachments (skips inline images and empty parts)."""
+    names: list[str] = []
+    for part in payload.get("parts", []) or []:
+        fname = part.get("filename", "")
+        if fname and part.get("body", {}).get("attachmentId"):
+            names.append(fname)
+        names.extend(_detect_attachments(part))
+    return names
+
+
 def _parse_addrs(value: str) -> list[str]:
     if not value:
         return []
@@ -231,6 +242,7 @@ def fetch_emails(query: str | None = None, max_results: int | None = None) -> li
                 date=headers.get("date", ""),
                 labels=msg.get("labelIds", []),
                 thread_messages=thread_ctx,
+                attachments=_detect_attachments(payload),
             )
         )
         logger.debug("Fetched email %s — %r", mid, headers.get("subject", ""))
@@ -333,8 +345,12 @@ def fetch_sent_no_reply(days: int = 3, max_results: int = 10) -> list[Email]:
 
 
 @_gmail_retry
-def fetch_sent_sample(max_results: int = 25) -> list[Email]:
-    """Fetch recent sent emails for writing-style analysis."""
+def fetch_sent_sample(max_results: int = 50) -> list[Email]:
+    """Fetch sent emails for writing-style analysis.
+
+    Fetches a larger pool, filters out replies and very short emails, then
+    returns the most stylistically rich originals (longest bodies first).
+    """
     service = _get_service()
     result = (
         service.users()
@@ -344,28 +360,43 @@ def fetch_sent_sample(max_results: int = 25) -> list[Email]:
     )
     message_ids = [m["id"] for m in result.get("messages", [])]
 
-    emails: list[Email] = []
+    candidates: list[Email] = []
     for mid in message_ids:
         msg = service.users().messages().get(userId="me", id=mid, format="full").execute()
         payload = msg.get("payload", {})
         headers = _headers_to_dict(payload.get("headers", []))
+        subject = headers.get("subject", "")
         body = _extract_body(payload)
+
         if not body.strip():
             continue
-        emails.append(
+        # Skip replies and forwards — they pollute the style model with quoted text
+        if subject.lower().startswith(("re:", "fwd:", "fw:")):
+            continue
+        # Skip very short emails (< 30 words) — not stylistically informative
+        if len(body.split()) < 30:
+            continue
+
+        candidates.append(
             Email(
                 id=msg["id"],
                 thread_id=msg["threadId"],
                 from_addr=headers.get("from", ""),
                 to=_parse_addrs(headers.get("to", "")),
-                subject=headers.get("subject", ""),
+                subject=subject,
                 snippet=msg.get("snippet", ""),
                 body=body,
                 date=headers.get("date", ""),
                 labels=msg.get("labelIds", []),
             )
         )
-        logger.debug("Style sample: %s — %r", mid, headers.get("subject", ""))
+        logger.debug("Style candidate: %s — %r", mid, subject)
 
-    logger.info("Fetched %d sent email(s) for style analysis", len(emails))
-    return emails
+    # Longest originals are most stylistically representative
+    candidates.sort(key=lambda e: len(e.body), reverse=True)
+    selected = candidates[:15]
+    logger.info(
+        "Style sample: %d original(s) selected from %d candidates",
+        len(selected), len(candidates),
+    )
+    return selected

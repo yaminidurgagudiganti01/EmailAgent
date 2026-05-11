@@ -101,6 +101,15 @@ def _ensure_pg_schema() -> None:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS followup_tracker (
+                    thread_id           TEXT PRIMARY KEY,
+                    original_message_id TEXT NOT NULL,
+                    drafted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    status              TEXT NOT NULL DEFAULT 'drafted',
+                    followup_message_id TEXT
+                )
+            """)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +184,15 @@ def _ensure_sqlite_schema() -> None:
                 title      TEXT NOT NULL,
                 content    TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS followup_tracker (
+                thread_id           TEXT PRIMARY KEY,
+                original_message_id TEXT NOT NULL,
+                drafted_at          TEXT NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'drafted',
+                followup_message_id TEXT
             )
         """)
 
@@ -509,3 +527,68 @@ def delete_kb_entry(entry_id: int) -> None:
     else:
         with _sqlite() as conn:
             conn.execute("DELETE FROM kb_entries WHERE id=?", (entry_id,))
+
+
+# ---------------------------------------------------------------------------
+# Follow-up tracker
+# ---------------------------------------------------------------------------
+
+def has_followup_draft(thread_id: str) -> bool:
+    """Return True if a follow-up has already been drafted/sent for this thread."""
+    if _USE_PG:
+        with _pg() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM followup_tracker WHERE thread_id=%s AND status != 'dismissed'",
+                    (thread_id,),
+                )
+                return cur.fetchone() is not None
+    else:
+        with _sqlite() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM followup_tracker WHERE thread_id=? AND status != 'dismissed'",
+                (thread_id,),
+            ).fetchone()
+        return row is not None
+
+
+def record_followup_draft(thread_id: str, original_message_id: str) -> None:
+    """Record that a follow-up draft was created for this thread."""
+    now = datetime.now(timezone.utc).isoformat()
+    if _USE_PG:
+        with _pg() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO followup_tracker (thread_id, original_message_id, drafted_at, status)
+                    VALUES (%s, %s, %s, 'drafted')
+                    ON CONFLICT (thread_id) DO UPDATE SET drafted_at=EXCLUDED.drafted_at, status='drafted'
+                    """,
+                    (thread_id, original_message_id, now),
+                )
+    else:
+        with _sqlite() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO followup_tracker (thread_id, original_message_id, drafted_at, status)
+                VALUES (?, ?, ?, 'drafted')
+                """,
+                (thread_id, original_message_id, now),
+            )
+
+
+def update_followup_status(thread_id: str, status: str) -> None:
+    """Update status to 'sent' or 'dismissed'."""
+    if _USE_PG:
+        with _pg() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE followup_tracker SET status=%s WHERE thread_id=%s",
+                    (status, thread_id),
+                )
+    else:
+        with _sqlite() as conn:
+            conn.execute(
+                "UPDATE followup_tracker SET status=? WHERE thread_id=?",
+                (status, thread_id),
+            )

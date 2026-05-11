@@ -14,22 +14,24 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 export const api = {
-  health:        ()                                  => req("GET",  "/health"),
-  stats:         ()                                  => req("GET",  "/stats"),
-  run:           (body: RunRequest)                  => req<RunResponse>("POST", "/run", body),
-  saveDraft:     (body: SendRequest)                 => req<{draft_id: string}>("POST", "/drafts/save", body),
-  sendEmail:     (body: SendRequest)                 => req<{message_id: string}>("POST", "/emails/send", body),
-  compose:       (body: ComposeRequest)              => req<DraftData>("POST", "/compose", body),
-  scanFollowups: (body: {days:number; max_emails:number}) => req<FollowupResponse>("POST", "/followups/scan", body),
-  conversations: (limit=100)                         => req<{entries: LogEntry[]}>("GET", `/conversations?limit=${limit}`),
-  getRules:      ()                                  => req<{rules: Rule[]}>("GET", "/rules"),
-  addRule:       (body: {rule_type:string; value:string}) => req("POST", "/rules", body),
-  deleteRule:    (id: number)                        => req("DELETE", `/rules/${id}`),
-  getStyle:      ()                                  => req<{profile: string | null}>("GET", "/style"),
-  learnStyle:    ()                                  => req<{profile: string; emails_analysed: number}>("POST", "/style/learn"),
-  getKb:         ()                                  => req<{entries: KbEntry[]}>("GET", "/kb"),
-  addKb:         (body: {title: string; content: string}) => req("POST", "/kb", body),
-  deleteKb:      (id: number)                        => req("DELETE", `/kb/${id}`),
+  health:               ()                                        => req("GET",  "/health"),
+  stats:                ()                                        => req("GET",  "/stats"),
+  run:                  (body: RunRequest)                        => req<RunResponse>("POST", "/run", body),
+  saveDraft:            (body: SendRequest)                       => req<{draft_id: string}>("POST", "/drafts/save", body),
+  sendEmail:            (body: SendRequest)                       => req<{message_id: string}>("POST", "/emails/send", body),
+  compose:              (body: ComposeRequest)                    => req<DraftData>("POST", "/compose", body),
+  scanFollowups:        (body: {days:number; max_emails:number})  => req<FollowupResponse>("POST", "/followups/scan", body),
+  updateFollowupStatus: (thread_id: string, status: "sent" | "dismissed") =>
+                          req("PATCH", `/followups/${encodeURIComponent(thread_id)}`, { status }),
+  conversations:        (limit=100)                               => req<{entries: LogEntry[]}>("GET", `/conversations?limit=${limit}`),
+  getRules:             ()                                        => req<{rules: Rule[]}>("GET", "/rules"),
+  addRule:              (body: {rule_type:string; value:string})  => req("POST", "/rules", body),
+  deleteRule:           (id: number)                              => req("DELETE", `/rules/${id}`),
+  getStyle:             ()                                        => req<{profile: string | null}>("GET", "/style"),
+  learnStyle:           ()                                        => req<{profile: string; emails_analysed: number}>("POST", "/style/learn"),
+  getKb:                ()                                        => req<{entries: KbEntry[]}>("GET", "/kb"),
+  addKb:                (body: {title: string; content: string})  => req("POST", "/kb", body),
+  deleteKb:             (id: number)                              => req("DELETE", `/kb/${id}`),
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -49,10 +51,13 @@ export interface EmailResult {
   snippet: string;
   category: string;
   priority: "high" | "medium" | "low";
+  confidence: number;
+  needs_review: boolean;
   reasoning: string;
   suggested_action: string;
   excluded: boolean;
   draft: DraftData | null;
+  error?: string;
 }
 
 export interface DraftData {

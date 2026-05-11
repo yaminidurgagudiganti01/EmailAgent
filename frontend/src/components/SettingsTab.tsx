@@ -152,7 +152,7 @@ export default function SettingsTab() {
           <div>
             <h2 className="font-semibold text-slate-800">🧠 Writing Style</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Analyses your last 25 sent emails so the AI matches your tone and phrasing.
+              Analyses your sent emails (original only, not replies) so the AI matches your tone and phrasing.
             </p>
           </div>
           <button onClick={learnStyle} disabled={styleLoading}
